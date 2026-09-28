@@ -38,6 +38,7 @@ void app_coding_catalog_item(const char *scope, const char *id,
 void app_coding_catalog_end(const char *scope);
 void app_coding_task_selected(const char *title, const char *project);
 void app_coding_capture_level(uint8_t level);
+void app_coding_capture_stopped(void);
 bool app_coding_ok_is_record_action(void);
 void app_coding_display_active(bool active);
 void app_coding_enter(void);

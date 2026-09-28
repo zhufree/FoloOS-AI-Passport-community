@@ -1,0 +1,162 @@
+import contextlib
+import io
+import json
+import os
+import pty
+import select
+import tempfile
+import threading
+import unittest
+from unittest.mock import Mock, patch
+
+from tools.feishu_setup import exchange, main, provision, validate_settings
+from tools.mac_bridge import SerialBridge, configure_serial, encode_message
+
+
+class FeishuSetupTests(unittest.TestCase):
+    def test_credentials_are_optional_only_as_a_pair(self):
+        self.assertEqual(validate_settings({"engine": "apple"})["app_id"], "")
+        self.assertEqual(validate_settings({"engine": "feishu"})["app_secret"], "")
+        for settings in (
+            {"engine": "feishu", "app_id": "cli_test"},
+            {"engine": "feishu", "app_secret": "test_secret"},
+            {"engine": "feishu", "app_id": "cli_test", "app_secret": "x\nheader"},
+            {"engine": "unknown"}, [],
+        ):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                validate_settings(settings)
+
+    def test_clear_removes_credentials_from_request(self):
+        self.assertEqual(validate_settings({"clear": True, "app_secret": "test_secret"}),
+                         {"engine": "apple", "clear": True})
+
+    def test_old_firmware_receives_probe_but_no_secret(self):
+        with patch("tools.feishu_setup.os.open", return_value=42), \
+                patch("tools.feishu_setup.os.close") as close, \
+                patch("tools.feishu_setup.configure_serial"), \
+                patch("tools.feishu_setup.exchange", side_effect=RuntimeError("old firmware")) as send:
+            with self.assertRaises(RuntimeError):
+                provision("unused", {"engine": "feishu", "app_id": "cli_test", "app_secret": "test_secret"})
+            send.assert_called_once_with(42, {"type": "feishu_status"})
+            close.assert_called_once_with(42)
+
+    def test_save_ack_must_match_requested_engine(self):
+        with patch("tools.feishu_setup.os.open", return_value=42), \
+                patch("tools.feishu_setup.os.close"), \
+                patch("tools.feishu_setup.configure_serial"), \
+                patch("tools.feishu_setup.exchange", side_effect=[{}, {"engine": "apple", "configured": True}]):
+            with self.assertRaisesRegex(RuntimeError, "不一致"):
+                provision("unused", {"engine": "feishu", "app_id": "cli_test", "app_secret": "test_secret"})
+
+    def test_usb_handshake_and_save_with_fragmented_ack(self):
+        master, slave = pty.openpty()
+        requests = []
+        errors = []
+        def device():
+            try:
+                buffer = bytearray()
+                for _ in range(2):
+                    while b"\n" not in buffer:
+                        if not select.select([master], [], [], 2)[0]:
+                            raise TimeoutError("no request")
+                        buffer.extend(os.read(master, 1024))
+                    line, _, rest = buffer.partition(b"\n")
+                    buffer[:] = rest
+                    request = json.loads(line)
+                    requests.append(request)
+                    response = {"type": "feishu_config_status", "protocol": 1,
+                                "request_id": request["request_id"], "ok": True,
+                                "engine": "feishu", "configured": True}
+                    os.write(master, b"boot log\n")
+                    wire = (json.dumps(response) + "\n").encode()
+                    os.write(master, wire[:9])
+                    os.write(master, wire[9:])
+            except Exception as error:
+                errors.append(error)
+        worker = threading.Thread(target=device)
+        worker.start()
+        try:
+            reply = provision(os.ttyname(slave), {"engine": "feishu", "app_id": "cli_test", "app_secret": "test_secret"})
+            worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(errors, errors)
+            self.assertTrue(reply["configured"])
+            self.assertEqual(requests[0]["type"], "feishu_status")
+            self.assertNotIn("app_secret", requests[0])
+            self.assertEqual(requests[1]["app_secret"], "test_secret")
+        finally:
+            os.close(master)
+            os.close(slave)
+            worker.join(3)
+
+    def test_stale_ack_is_not_accepted(self):
+        master, slave = pty.openpty()
+        try:
+            configure_serial(slave)
+            os.write(master, b'{"type":"feishu_config_status","protocol":1,"request_id":"stale","ok":true}\n')
+            with self.assertRaisesRegex(RuntimeError, "未响应"):
+                exchange(slave, {"type": "feishu_status"}, timeout=0.15)
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_malformed_input_does_not_echo_secrets(self):
+        with patch("sys.stdin", io.StringIO('{"app_secret":"test_secret"')), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(main(["--port", "unused", "--stdin"]), 1)
+        self.assertNotIn("test_secret", errors.getvalue())
+
+    def test_busy_device_error_is_sanitized(self):
+        master, slave = pty.openpty()
+        def reply():
+            wire = bytearray()
+            while b"\n" not in wire:
+                wire.extend(os.read(master, 1024))
+            req = json.loads(wire)
+            os.write(master, (json.dumps({"type": "feishu_config_status", "protocol": 1,
+                "request_id": req["request_id"], "ok": False, "error": "busy",
+                "app_secret": "must_not_be_displayed"}) + "\n").encode())
+        configure_serial(slave)
+        worker = threading.Thread(target=reply)
+        worker.start()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "录音或升级"):
+                exchange(slave, {"type": "feishu_status"})
+        finally:
+            worker.join(2)
+            os.close(master)
+            os.close(slave)
+
+    def test_device_asr_does_not_launch_mac_recognition_or_codex_poll(self):
+        with tempfile.TemporaryDirectory() as directory:
+            from pathlib import Path
+            codex = Mock()
+            codex.poll.return_value = []
+            bridge = SerialBridge("unused", codex=codex, recordings_dir=Path(directory))
+            bridge.speech_process = Mock()
+            bridge.speech_process.poll.return_value = None
+            old_process = bridge.speech_process
+            with contextlib.redirect_stdout(io.StringIO()):
+                bridge.handle_line(encode_message({"type": "device_asr", "active": True}))
+                bridge.poll_codex()
+                old_process.terminate.assert_called_once()
+                self.assertIsNone(bridge.speech_process)
+                codex.poll.assert_not_called()
+                bridge.handle_line(encode_message({"type": "device_asr", "active": False}))
+                bridge.poll_codex()
+                codex.poll.assert_called_once()
+
+    def test_cancel_discards_pending_apple_result(self):
+        bridge = SerialBridge("unused")
+        process = Mock()
+        process.poll.return_value = None
+        bridge.speech_process = process
+        bridge.capture.start({})
+        bridge.handle_line(encode_message({"type": "record_cancel"}))
+        process.terminate.assert_called_once()
+        self.assertIsNone(bridge.speech_process)
+        self.assertFalse(bridge.capture.active)
+
+
+if __name__ == "__main__":
+    unittest.main()

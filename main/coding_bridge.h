@@ -11,6 +11,8 @@
 esp_err_t coding_bridge_init(void);
 void coding_bridge_send_record_start(void);
 void coding_bridge_send_record_stop(void);
+void coding_bridge_cancel_recording(void);
+bool coding_bridge_recording_busy(void);
 bool coding_bridge_send_voice(const char *text);
 void coding_bridge_send_approval(coding_decision_t decision);
 void coding_bridge_send_cancel(void);

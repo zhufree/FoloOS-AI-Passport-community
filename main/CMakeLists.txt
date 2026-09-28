@@ -36,6 +36,8 @@ idf_component_register(
          "ui_pixel_math.c"
          "coding_flow.c"
          "coding_bridge.c"
+         "feishu_service.c"
+         "feishu_protocol.c"
          "wireless_bridge.c"
          "app_coding.c"
          "app_settings.c"
@@ -47,7 +49,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES bsp esp_driver_usb_serial_jtag esp_timer json mbedtls app_update
              esp_wifi esp_netif esp_event nvs_flash
-             esp_http_server
+             esp_http_server esp_http_client
     EMBED_FILES ${app_audio}
 )
 

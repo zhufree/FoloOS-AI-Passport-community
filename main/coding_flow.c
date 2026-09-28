@@ -121,7 +121,8 @@ void coding_flow_retry_voice(coding_flow_t *flow)
 
 void coding_flow_cancel_voice(coding_flow_t *flow)
 {
-    if (flow == NULL || (flow->stage != CODING_STAGE_VOICE_REVIEW &&
+    if (flow == NULL || (flow->stage != CODING_STAGE_RECORDING &&
+                         flow->stage != CODING_STAGE_VOICE_REVIEW &&
                          flow->stage != CODING_STAGE_TRANSCRIBING)) {
         return;
     }

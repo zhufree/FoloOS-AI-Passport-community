@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "bsp_audio.h"
+#include "coding_bridge.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -119,7 +120,7 @@ static void sfx_task(void *argument)
     sfx_request_t request;
     for (;;) {
         if (xQueueReceive(s_queue, &request, portMAX_DELAY) != pdTRUE) continue;
-        if (!s_available || s_volume == 0) continue;
+        if (!s_available || s_volume == 0 || coding_bridge_recording_busy()) continue;
         if (bsp_audio_set_format(SFX_SAMPLE_RATE, 16, 1) != ESP_OK) continue;
         bsp_audio_set_volume(s_volume);
 

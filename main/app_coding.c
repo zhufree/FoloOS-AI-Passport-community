@@ -5,6 +5,7 @@
 
 #include "coding_flow.h"
 #include "coding_bridge.h"
+#include "feishu_service.h"
 #include "lvgl.h"
 #include "ui_pixel.h"
 #include "ui_pixel_math.h"
@@ -826,7 +827,8 @@ static void coding_render(void)
         a1 = "切换任务";
         break;
     case CODING_STAGE_RECORDING:
-        snprintf(detail, sizeof(s_render_detail), "正在认真听你说话…");
+        snprintf(detail, sizeof(s_render_detail), "%s", feishu_service_enabled()
+                 ? "飞书语音识别，最长 30 秒…" : "正在认真听你说话…");
         a0 = "结束录音";
         panel_color = UI_SOFT;
         break;
@@ -999,6 +1001,14 @@ void app_coding_task_selected(const char *title, const char *project)
     coding_render();
 }
 
+void app_coding_capture_stopped(void)
+{
+    if (s_flow.stage == CODING_STAGE_RECORDING) {
+        (void)coding_flow_end_recording(&s_flow);
+        coding_render();
+    }
+}
+
 void app_coding_bridge_transcript(const char *text)
 {
     app_power_activity();
@@ -1167,6 +1177,9 @@ void app_coding_enter(void)
 
 void app_coding_exit(void)
 {
+    coding_bridge_cancel_recording();
+    coding_flow_cancel_voice(&s_flow);
+    app_power_hold_awake(false);
     if (s_record_timer != NULL) {
         lv_timer_delete(s_record_timer);
         s_record_timer = NULL;
@@ -1289,6 +1302,7 @@ void app_coding_key(bsp_btn_t button, bsp_btn_ev_t event)
             action = coding_flow_end_recording(&s_flow);
             break;
         case CODING_STAGE_TRANSCRIBING:
+            coding_bridge_cancel_recording();
             coding_flow_cancel_voice(&s_flow);
             break;
         case CODING_STAGE_VOICE_REVIEW:

@@ -43,6 +43,7 @@
 @property(nonatomic, strong) NSButton *wifiButton;
 @property(nonatomic, strong) NSButton *refreshButton;
 @property(nonatomic, strong) NSButton *firmwareButton;
+@property(nonatomic, strong) NSButton *feishuButton;
 @property(nonatomic, strong) NSButton *pomodoroChoice;
 @property(nonatomic, strong) NSButton *wordBearChoice;
 @property(nonatomic, strong) NSTextField *firmwareSummary;
@@ -116,7 +117,7 @@
 
 - (void)buildWindow {
     self.window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 650, 675)
+        initWithContentRect:NSMakeRect(0, 0, 650, 725)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
         backing:NSBackingStoreBuffered
         defer:NO];
@@ -193,6 +194,15 @@
     NSStackView *firmwareRow = [NSStackView stackViewWithViews:@[self.firmwareButton, firmwareNote]];
     firmwareRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     firmwareRow.spacing = 10;
+    self.feishuButton = [NSButton buttonWithTitle:@"配置飞书语音…" target:self action:@selector(configureFeishu:)];
+    self.feishuButton.bezelStyle = NSBezelStyleRounded;
+    NSTextField *speechNote = [NSTextField labelWithString:@"通过 USB 设置设备直连飞书，或切回 Apple 识别"];
+    speechNote.font = [NSFont systemFontOfSize:12];
+    speechNote.textColor = NSColor.secondaryLabelColor;
+    NSStackView *speechRow = [NSStackView stackViewWithViews:@[self.feishuButton, speechNote]];
+    speechRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    speechRow.spacing = 10;
+
 
     self.progress = [NSProgressIndicator new];
     self.progress.style = NSProgressIndicatorStyleSpinning;
@@ -223,7 +233,7 @@
     note.font = [NSFont systemFontOfSize:12];
     note.maximumNumberOfLines = 2;
 
-    NSStackView *root = [NSStackView stackViewWithViews:@[header, statusBox, buttons, firmwareRow, outputHeader, scroll, note]];
+    NSStackView *root = [NSStackView stackViewWithViews:@[header, statusBox, buttons, firmwareRow, speechRow, outputHeader, scroll, note]];
     root.orientation = NSUserInterfaceLayoutOrientationVertical;
     root.alignment = NSLayoutAttributeLeading;
     root.spacing = 16;
@@ -291,6 +301,7 @@
     self.wifiButton.enabled = !busy;
     self.refreshButton.enabled = !busy;
     self.firmwareButton.enabled = !busy;
+    self.feishuButton.enabled = !busy;
     if (busy) {
         [self.progress startAnimation:nil];
     } else {
@@ -611,6 +622,76 @@
     }
     [ports sortUsingSelector:@selector(compare:)];
     return ports;
+}
+
+- (void)configureFeishu:(id)sender {
+    NSString *python = self.pythonPath;
+    NSArray<NSString *> *ports = self.usbPorts;
+    if (!python || !ports.count) {
+        [self showAlert:@"需要 Python 3 和设备 USB 连接" message:@"请用数据线连接设备，关闭串口监视器或浏览器刷机连接。"];
+        return;
+    }
+    NSPopUpButton *port = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [port addItemsWithTitles:ports];
+    NSPopUpButton *engine = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [engine addItemsWithTitles:@[@"飞书识别（设备直接联网）", @"Apple 识别（由 Mac 处理）"]];
+    NSTextField *appID = [NSTextField new];
+    appID.placeholderString = @"App ID（cli_ 开头）";
+    NSSecureTextField *secret = [NSSecureTextField new];
+    secret.placeholderString = @"App Secret";
+    NSTextField *note = [NSTextField wrappingLabelWithString:@"应用凭据同时留空可保留设备原配置。凭据只写入设备，不保存到 Mac；切回 Apple 不会删除凭据。"];
+    note.font = [NSFont systemFontOfSize:12];
+    note.textColor = NSColor.secondaryLabelColor;
+    NSStackView *stack = [NSStackView stackViewWithViews:@[port, engine, appID, secret, note]];
+    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    stack.alignment = NSLayoutAttributeLeading;
+    stack.spacing = 10;
+    stack.frame = NSMakeRect(0, 0, 420, 180);
+    for (NSView *view in @[port, engine, appID, secret, note]) {
+        [[view.widthAnchor constraintEqualToConstant:420] setActive:YES];
+    }
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"配置设备语音识别";
+    alert.informativeText = @"先安装/修复桥接，再通过“自定义安装应用”更新固件。飞书需已发布的企业自建应用和 speech_to_text:speech 权限；官方接口不支持免费版。启用后，设备将录音直接发送至飞书，识别文字仍需你确认后才交给 Codex。";
+    alert.accessoryView = stack;
+    [alert addButtonWithTitle:@"写入设备"];
+    [alert addButtonWithTitle:@"取消"];
+    [alert addButtonWithTitle:@"清除设备凭据"];
+    NSModalResponse choice = [alert runModal];
+    if (choice != NSAlertFirstButtonReturn && choice != NSAlertThirdButtonReturn) return;
+    BOOL clear = choice == NSAlertThirdButtonReturn;
+    NSString *identifier = [appID.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!clear && ((identifier.length > 0) != (secret.stringValue.length > 0))) {
+        secret.stringValue = @"";
+        [self showAlert:@"应用凭据不完整" message:@"请同时填写 App ID 和 App Secret，或同时留空保留原配置。"];
+        return;
+    }
+    NSData *input = [NSJSONSerialization dataWithJSONObject:@{
+        @"engine": engine.indexOfSelectedItem == 0 ? @"feishu" : @"apple",
+        @"app_id": clear ? @"" : identifier,
+        @"app_secret": clear ? @"" : secret.stringValue,
+        @"clear": @(clear)
+    } options:0 error:nil];
+    secret.stringValue = @"";
+    NSString *selectedPort = port.titleOfSelectedItem;
+    self.firmwareInstalling = YES;
+    [self setBusy:YES message:@"正在通过 USB 写入设备语音配置…"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL wasRunning = [[self runCommand:@"/bin/launchctl" arguments:@[@"print", self.serviceName]][@"code"] intValue] == 0;
+        if (wasRunning) [self stopService];
+        NSDictionary *result = [self runCommand:python arguments:@[
+            [[self.toolsURL URLByAppendingPathComponent:@"feishu_setup.py"] path],
+            @"--port", selectedPort, @"--stdin"
+        ] input:input];
+        if (wasRunning) [self startServiceIfInstalled];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.firmwareInstalling = NO;
+            [self setBusy:NO message:nil];
+            [self display:result[@"output"]];
+            [self showAlert:[result[@"code"] intValue] == 0 ? @"设备配置已保存" : @"配置未完成"
+                   message:result[@"output"]];
+        });
+    });
 }
 
 - (void)configureWiFi:(id)sender {

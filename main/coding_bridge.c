@@ -1,6 +1,7 @@
 #include "coding_bridge.h"
 
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
 #include "wireless_bridge.h"
+#include "feishu_service.h"
 
 #define BRIDGE_LINE_MAX 768
 #define BRIDGE_TIMEOUT_US (12LL * 1000LL * 1000LL)
@@ -33,7 +35,12 @@ static const char *TAG = "coding_bridge";
 static bool s_ready;
 static bool s_connected;
 static int64_t s_last_message_us;
-static volatile bool s_capture_requested;
+static atomic_bool s_capture_requested;
+static atomic_bool s_capture_cancelled;
+static atomic_bool s_capture_stop;
+static atomic_bool s_capture_busy;
+static atomic_bool s_record_cancel_pending;
+static bool s_capture_feishu;
 static TaskHandle_t s_capture_task;
 static esp_ota_handle_t s_ota_handle;
 static const esp_partition_t *s_ota_partition;
@@ -155,7 +162,7 @@ static void speech_start(const cJSON *root)
     uint32_t sample_rate = cJSON_IsNumber(rate) ? (uint32_t)rate->valuedouble
                                                 : 16000U;
     s_speech_playing = false;
-    if (s_capture_requested || app_settings_voice_mode() != APP_VOICE_SPEECH ||
+    if (atomic_load(&s_capture_busy) || app_settings_voice_mode() != APP_VOICE_SPEECH ||
         sample_rate < 8000U || sample_rate > 24000U) {
         return;
     }
@@ -167,7 +174,7 @@ static void speech_start(const cJSON *root)
 
 static void speech_chunk(const cJSON *root)
 {
-    if (!s_speech_playing) return;
+    if (!s_speech_playing || atomic_load(&s_capture_busy)) return;
     const char *encoded = json_string(root, "data");
     unsigned char decoded[SPEECH_CHUNK_BYTES];
     size_t decoded_length = 0U;
@@ -350,6 +357,10 @@ static void ota_begin_message(const cJSON *root)
         send_ota_status("error", 0, "没有足够的 OTA 空间");
         return;
     }
+    if (coding_bridge_recording_busy()) {
+        send_ota_status("error", 0, "请先结束录音再升级固件");
+        return;
+    }
     if (s_ota_active) esp_ota_abort(s_ota_handle);
     esp_err_t result = esp_ota_begin(partition, expected, &s_ota_handle);
     if (result != ESP_OK) {
@@ -482,6 +493,7 @@ static void capture_task(void *argument)
         send_capture_error("麦克风格式设置失败");
         s_capture_requested = false;
         s_capture_task = NULL;
+        atomic_store(&s_capture_busy, false);
         vTaskDelete(NULL);
         return;
     }
@@ -515,7 +527,7 @@ static void capture_task(void *argument)
             level_tick = 0;
         }
     }
-    if (capture_ok) {
+    if (capture_ok && !atomic_load(&s_capture_cancelled)) {
         send_record_footer(total_bytes);
     }
     if (bsp_lvgl_lock(20)) {
@@ -523,31 +535,101 @@ static void capture_task(void *argument)
         bsp_lvgl_unlock();
     }
     s_capture_task = NULL;
+    atomic_store(&s_capture_busy, false);
     vTaskDelete(NULL);
 }
 
-static void start_capture(void)
+static void send_device_asr_state(bool active)
 {
-    if (!s_ready || s_capture_task != NULL) {
-        return;
+    cJSON *root = event_create("device_asr");
+    if (root) cJSON_AddBoolToObject(root, "active", active);
+    send_json(root);
+}
+
+static void feishu_level(uint8_t level, void *context)
+{
+    (void)context;
+    if (bsp_lvgl_lock(0)) {
+        if (!atomic_load(&s_capture_cancelled)) app_coding_capture_level(level);
+        bsp_lvgl_unlock();
     }
-    s_capture_requested = true;
-    if (xTaskCreate(capture_task, "voice_capture", CAPTURE_TASK_STACK, NULL, 5,
-                    &s_capture_task) != pdPASS) {
-        s_capture_requested = false;
-        s_capture_task = NULL;
-        send_capture_error("录音任务创建失败");
+}
+
+static void feishu_stopped(void *context)
+{
+    (void)context;
+    if (bsp_lvgl_lock(500)) {
+        if (!atomic_load(&s_capture_cancelled)) app_coding_capture_stopped();
+        bsp_lvgl_unlock();
     }
+}
+
+static void feishu_capture_task(void *argument)
+{
+    (void)argument;
+    char *text = calloc(1, FEISHU_TRANSCRIPT_MAX);
+    feishu_asr_control_t control = {
+        .stop = &s_capture_stop, .cancel = &s_capture_cancelled,
+        .level = feishu_level, .stopped = feishu_stopped,
+    };
+    send_device_asr_state(true);
+    esp_err_t result = !wireless_bridge_is_connected() ? ESP_ERR_TIMEOUT :
+                       text ? feishu_service_recognize(&control, text, FEISHU_TRANSCRIPT_MAX) :
+                              ESP_ERR_NO_MEM;
+    if (bsp_lvgl_lock(500)) {
+        if (!atomic_load(&s_capture_cancelled)) {
+            app_coding_capture_stopped();
+            if (result == ESP_OK) app_coding_bridge_transcript(text);
+            else app_coding_bridge_error(feishu_service_error(result));
+        }
+        app_coding_capture_level(0);
+        bsp_lvgl_unlock();
+    }
+    free(text);
+    send_device_asr_state(false);
+    atomic_store(&s_capture_requested, false);
+    s_capture_task = NULL;
+    atomic_store(&s_capture_busy, false);
+    vTaskDelete(NULL);
 }
 
 void coding_bridge_send_record_start(void)
 {
-    start_capture();
+    if (!s_ready || s_ota_active || atomic_load(&s_record_cancel_pending) ||
+        atomic_exchange(&s_capture_busy, true)) {
+        app_coding_bridge_error("上一段录音正在结束，请稍后重试");
+        return;
+    }
+    atomic_store(&s_capture_cancelled, false);
+    atomic_store(&s_capture_stop, false);
+    s_capture_requested = true;
+    s_capture_feishu = feishu_service_enabled();
+    if (xTaskCreate(s_capture_feishu ? feishu_capture_task : capture_task,
+                    "voice_capture", s_capture_feishu ? 8192 : CAPTURE_TASK_STACK,
+                    NULL, 5, &s_capture_task) != pdPASS) {
+        s_capture_requested = false;
+        s_capture_task = NULL;
+        atomic_store(&s_capture_busy, false);
+        app_coding_bridge_error("录音任务创建失败");
+    }
 }
 
 void coding_bridge_send_record_stop(void)
 {
     s_capture_requested = false;
+    atomic_store(&s_capture_stop, true);
+}
+
+void coding_bridge_cancel_recording(void)
+{
+    atomic_store(&s_capture_cancelled, true);
+    atomic_store(&s_record_cancel_pending, true);
+    coding_bridge_send_record_stop();
+}
+
+bool coding_bridge_recording_busy(void)
+{
+    return atomic_load(&s_capture_busy);
 }
 
 bool coding_bridge_send_voice(const char *text)
@@ -651,6 +733,11 @@ static bool dispatch_message(const cJSON *root)
     }
 
     s_last_message_us = esp_timer_get_time();
+
+    if (feishu_service_enabled() &&
+        (strcmp(type, "transcript") == 0 ||
+         (strncmp(type, "text_", 5) == 0 &&
+          strcmp(json_string(root, "target"), "transcript") == 0))) return true;
 
     if (strcmp(type, "text_begin") == 0) {
         long_text_begin(root);
@@ -758,6 +845,48 @@ static bool dispatch_message(const cJSON *root)
     return true;
 }
 
+static void process_feishu_config(cJSON *root, bool usb_transport)
+{
+    const char *type = json_string(root, "type");
+    const char *request_id = json_string(root, "request_id");
+    const cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "protocol");
+    esp_err_t result = ESP_ERR_INVALID_ARG;
+    if (usb_transport && strlen(request_id) == 32 &&
+        cJSON_IsNumber(version) && version->valuedouble == 1) {
+        if (strcmp(type, "feishu_status") == 0) result = ESP_OK;
+        else if (strcmp(type, "feishu_configure") == 0) {
+            const cJSON *clear = cJSON_GetObjectItemCaseSensitive(root, "clear");
+            const char *engine = json_string(root, "engine");
+            if (atomic_load(&s_capture_busy) || s_ota_active) result = ESP_ERR_INVALID_STATE;
+            else if (cJSON_IsTrue(clear)) result = feishu_service_configure(false, "", "", true);
+            else if (strcmp(engine, "apple") == 0 || strcmp(engine, "feishu") == 0) {
+                result = feishu_service_configure(strcmp(engine, "feishu") == 0,
+                           json_string(root, "app_id"), json_string(root, "app_secret"), false);
+            }
+        }
+    }
+    cJSON *secret = cJSON_GetObjectItemCaseSensitive(root, "app_secret");
+    if (cJSON_IsString(secret)) memset(secret->valuestring, 0, strlen(secret->valuestring));
+    /* Configuration is accepted/replied only on physical USB, not the LAN bridge. */
+    if (!usb_transport) return;
+    cJSON *response = event_create("feishu_config_status");
+    if (response == NULL) return;
+    cJSON_AddNumberToObject(response, "protocol", 1);
+    cJSON_AddStringToObject(response, "request_id", strlen(request_id) == 32 ? request_id : "");
+    cJSON_AddBoolToObject(response, "ok", result == ESP_OK);
+    cJSON_AddBoolToObject(response, "configured", feishu_service_configured());
+    cJSON_AddStringToObject(response, "engine", feishu_service_enabled() ? "feishu" : "apple");
+    cJSON_AddStringToObject(response, "error", result == ESP_OK ? "" :
+                            result == ESP_ERR_INVALID_STATE ? "busy" : "invalid_or_storage");
+    char *wire = cJSON_PrintUnformatted(response);
+    cJSON_Delete(response);
+    if (wire != NULL) {
+        usb_serial_jtag_write_bytes(wire, strlen(wire), pdMS_TO_TICKS(250));
+        usb_serial_jtag_write_bytes("\n", 1, pdMS_TO_TICKS(100));
+        cJSON_free(wire);
+    }
+}
+
 static void process_line(const char *line, bool usb_transport)
 {
     cJSON *root = cJSON_Parse(line);
@@ -766,7 +895,9 @@ static void process_line(const char *line, bool usb_transport)
         return;
     }
     const char *type = json_string(root, "type");
-    if (strcmp(type, "wifi_setup") == 0) {
+    if (strncmp(type, "feishu_", 7) == 0) {
+        process_feishu_config(root, usb_transport);
+    } else if (strcmp(type, "wifi_setup") == 0) {
         esp_err_t result = wireless_bridge_configure(json_string(root, "ssid"),
                                                      json_string(root, "password"),
                                                      json_string(root, "token"));
@@ -798,6 +929,10 @@ static void bridge_task(void *argument)
     bool dropping_line = false;
 
     while (true) {
+        if (atomic_load(&s_record_cancel_pending)) {
+            send_simple("record_cancel");
+            atomic_store(&s_record_cancel_pending, false);
+        }
         int count = usb_serial_jtag_read_bytes(input, sizeof(input),
                                                pdMS_TO_TICKS(100));
         for (int index = 0; index < count; ++index) {
@@ -809,6 +944,7 @@ static void bridge_task(void *argument)
                 if (!dropping_line && line_length > 0) {
                     line[line_length] = '\0';
                     process_line(line, true);
+                    memset(line, 0, sizeof(line));
                 }
                 line_length = 0;
                 dropping_line = false;
@@ -823,7 +959,7 @@ static void bridge_task(void *argument)
 
         if (s_connected &&
             esp_timer_get_time() - s_last_message_us > BRIDGE_TIMEOUT_US) {
-            s_capture_requested = false;
+            coding_bridge_cancel_recording();
             if (bsp_lvgl_lock(500)) {
                 s_connected = false;
                 app_coding_bridge_connected(false);
@@ -863,6 +999,8 @@ esp_err_t coding_bridge_init(void)
         ESP_LOGW(TAG, "wireless bridge unavailable: %s",
                  esp_err_to_name(wireless));
     }
+    esp_err_t feishu = feishu_service_init();
+    if (feishu != ESP_OK) ESP_LOGW(TAG, "Feishu settings unavailable: %s", esp_err_to_name(feishu));
     ESP_LOGI(TAG, "USB audio bridge ready, wireless=%d", wireless == ESP_OK);
     return ESP_OK;
 }

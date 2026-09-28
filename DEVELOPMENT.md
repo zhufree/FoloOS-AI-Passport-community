@@ -126,3 +126,9 @@ zsh tests/test_mac_installer_proxy.zsh
 > 请先阅读 AGENTS.md、DEVELOPMENT.md、main/app.h、main/main.c 和相关 BSP 接口。为 FoloOS 添加一个【填写功能】小应用，保留现有四个应用，在菜单末尾追加。使用 ESP-IDF 5.5.3，不增加动态插件系统。先编译，再分别报告主机测试结果和需要我在真机确认的内容；未经要求不要自动刷机。
 
 修改后可以在自己的 Fork 中发布固件，或提交 Pull Request。不要提交 Wi-Fi 密码、设备配对文件、Codex 登录信息、录音和个人日志。
+
+## 8. 共享飞书语音服务
+
+设备直连语音服务、USB 配置协议及开发验证见
+[飞书语音说明](docs/FEISHU_VOICE.md)。新应用应从工作任务调用共享服务，
+不要在 LVGL/按键回调中执行鉴权或音频网络请求。

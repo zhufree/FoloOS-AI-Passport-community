@@ -118,6 +118,13 @@ static void test_chinese_labels(void)
 
 int main(void)
 {
+    coding_flow_t cancelled;
+    coding_flow_init(&cancelled);
+    coding_flow_set_connected(&cancelled, true);
+    coding_flow_begin_recording(&cancelled);
+    coding_flow_cancel_voice(&cancelled);
+    assert(cancelled.stage == CODING_STAGE_IDLE);
+    assert(!coding_flow_set_transcript(&cancelled, "late result"));
     test_voice_requires_review();
     test_voice_retry_and_cancel();
     test_long_chinese_transcript_is_not_cut_at_old_limit();

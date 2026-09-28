@@ -3,14 +3,14 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
-BUILD="$ROOT/build/mac-installer"
+BUILD="${FOLOOS_MAC_BUILD_DIR:-$ROOT/build/mac-installer}"
 APP_NAME="FoloOS 编程伴侣"
 APP="$BUILD/$APP_NAME.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 STAGE="$BUILD/dmg"
-RELEASE="$ROOT/releases/custom-apps"
+RELEASE="${FOLOOS_RELEASE_DIR:-$ROOT/releases/custom-apps}"
 DMG="$RELEASE/FoloOS-Codex-Mac-Custom-Installer.dmg"
 
 # Build on the developer's machine; end users only select a bundled image.
@@ -49,6 +49,7 @@ for FILE in \
     codex_backend.py \
     install_autostart.py \
     firmware_catalog.py \
+    feishu_setup.py \
     mac_speech_helper.m \
     mac_speech_helper-Info.plist
 do
