@@ -631,6 +631,34 @@
         [self showAlert:@"需要 Python 3 和设备 USB 连接" message:@"请用数据线连接设备，关闭串口监视器或浏览器刷机连接。"];
         return;
     }
+    if (ports.count != 1) {
+        [self showFeishuConfiguration:python ports:ports];
+        return;
+    }
+    self.firmwareInstalling = YES;
+    [self setBusy:YES message:@"正在检测 USB 和设备飞书配置能力…"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL wasRunning = [[self runCommand:@"/bin/launchctl" arguments:@[@"print", self.serviceName]][@"code"] intValue] == 0;
+        if (wasRunning) [self stopService];
+        NSDictionary *result = [self runCommand:python arguments:@[
+            [[self.toolsURL URLByAppendingPathComponent:@"feishu_setup.py"] path],
+            @"--port", ports.firstObject, @"--check"
+        ]];
+        if (wasRunning) [self startServiceIfInstalled];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self setBusy:NO message:nil];
+            [self display:result[@"output"]];
+            self.firmwareInstalling = NO;
+            if ([result[@"code"] intValue] == 0) {
+                [self showFeishuConfiguration:python ports:ports];
+            } else {
+                [self showAlert:@"USB 连接检测未完成" message:result[@"output"]];
+            }
+        });
+    });
+}
+
+- (void)showFeishuConfiguration:(NSString *)python ports:(NSArray<NSString *> *)ports {
     NSPopUpButton *port = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [port addItemsWithTitles:ports];
     NSPopUpButton *engine = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];

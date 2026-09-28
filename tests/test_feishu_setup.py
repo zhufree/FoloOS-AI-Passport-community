@@ -9,11 +9,43 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from tools.feishu_setup import exchange, main, provision, validate_settings
+from tools.feishu_setup import UsbReplyTimeout, exchange, main, probe, provision, validate_settings
 from tools.mac_bridge import SerialBridge, configure_serial, encode_message
 
 
 class FeishuSetupTests(unittest.TestCase):
+    def test_probe_recovers_from_first_missing_reply(self):
+        with patch("tools.feishu_setup.exchange", side_effect=[UsbReplyTimeout("lost"), {"ok": True}]) as send:
+            self.assertEqual(probe(42), {"ok": True})
+            self.assertEqual(send.call_count, 2)
+            self.assertTrue(all(call.args[1] == {"type": "feishu_status"} for call in send.call_args_list))
+
+    def test_probe_exhaustion_does_not_send_credentials(self):
+        with patch("tools.feishu_setup.os.open", return_value=42), \
+                patch("tools.feishu_setup.os.close"), \
+                patch("tools.feishu_setup.configure_serial"), \
+                patch("tools.feishu_setup.exchange", side_effect=UsbReplyTimeout("lost")) as send:
+            with self.assertRaisesRegex(UsbReplyTimeout, "不表示固件未更新"):
+                provision("unused", {"engine": "feishu", "app_id": "cli_test", "app_secret": "test_secret"})
+            self.assertEqual(send.call_count, 3)
+            self.assertTrue(all(call.args[1] == {"type": "feishu_status"} for call in send.call_args_list))
+
+    def test_save_timeout_is_not_retried_or_reported_as_old_firmware(self):
+        with patch("tools.feishu_setup.os.open", return_value=42), \
+                patch("tools.feishu_setup.os.close"), \
+                patch("tools.feishu_setup.configure_serial"), \
+                patch("tools.feishu_setup.exchange", side_effect=[{"ok": True}, UsbReplyTimeout("lost")]) as send:
+            with self.assertRaisesRegex(UsbReplyTimeout, "保存结果尚未确认"):
+                provision("unused", {"engine": "feishu", "app_id": "cli_test", "app_secret": "test_secret"})
+            self.assertEqual(send.call_count, 2)
+
+    def test_check_mode_does_not_read_credentials(self):
+        with patch("tools.feishu_setup.check_device", return_value={"configured": False}) as check, \
+                patch("sys.stdin") as stdin, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--port", "unused", "--check"]), 0)
+            stdin.read.assert_not_called()
+            check.assert_called_once_with("unused")
+
     def test_credentials_are_optional_only_as_a_pair(self):
         self.assertEqual(validate_settings({"engine": "apple"})["app_id"], "")
         self.assertEqual(validate_settings({"engine": "feishu"})["app_secret"], "")
@@ -37,7 +69,7 @@ class FeishuSetupTests(unittest.TestCase):
                 patch("tools.feishu_setup.exchange", side_effect=RuntimeError("old firmware")) as send:
             with self.assertRaises(RuntimeError):
                 provision("unused", {"engine": "feishu", "app_id": "cli_test", "app_secret": "test_secret"})
-            send.assert_called_once_with(42, {"type": "feishu_status"})
+            send.assert_called_once_with(42, {"type": "feishu_status"}, timeout=3.0)
             close.assert_called_once_with(42)
 
     def test_save_ack_must_match_requested_engine(self):
@@ -62,6 +94,11 @@ class FeishuSetupTests(unittest.TestCase):
                         buffer.extend(os.read(master, 1024))
                     line, _, rest = buffer.partition(b"\n")
                     buffer[:] = rest
+                    if not line.strip():
+                        while b"\n" not in buffer:
+                            buffer.extend(os.read(master, 1024))
+                        line, _, rest = buffer.partition(b"\n")
+                        buffer[:] = rest
                     request = json.loads(line)
                     requests.append(request)
                     response = {"type": "feishu_config_status", "protocol": 1,

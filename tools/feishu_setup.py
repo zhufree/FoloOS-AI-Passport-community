@@ -35,9 +35,15 @@ def validate_settings(settings: dict) -> dict:
     return {"engine": engine, "app_id": app_id, "app_secret": secret, "clear": False}
 
 
+class UsbReplyTimeout(RuntimeError):
+    """No matching reply; safe to retry only a read-only capability probe."""
+
+
 def exchange(fd: int, message: dict, timeout: float = 5.0) -> dict:
     request_id = secrets.token_hex(16)
-    wire = memoryview((json.dumps({**message, "protocol": 1, "request_id": request_id}) + "\n").encode())
+    # A leading delimiter discards a partial line left by an interrupted USB session.
+    prefix = "\n" if message.get("type") == "feishu_status" else ""
+    wire = memoryview((prefix + json.dumps({**message, "protocol": 1, "request_id": request_id}) + "\n").encode())
     if len(wire) > 768:
         raise ValueError("配置超过设备协议长度限制")
     deadline = time.monotonic() + timeout
@@ -86,7 +92,29 @@ def exchange(fd: int, message: dict, timeout: float = 5.0) -> dict:
                     raise RuntimeError("设备正在录音或升级，请结束后重试")
                 raise RuntimeError("设备拒绝配置：请检查凭据；首次启用飞书需填写 App ID 和 Secret")
             return reply
-    raise RuntimeError("设备未响应：请先安装支持飞书识别的新固件，并确认 USB 串口没有被占用")
+    raise UsbReplyTimeout("设备未响应：等待 USB 回执超时")
+
+
+def probe(fd: int) -> dict:
+    for attempt in range(3):
+        try:
+            return exchange(fd, {"type": "feishu_status"}, timeout=3.0)
+        except UsbReplyTimeout:
+            if attempt == 2:
+                raise UsbReplyTimeout(
+                    "USB 握手未完成（已重试 3 次）。这不表示固件未更新；"
+                    "请重新插拔 USB，并关闭其他串口程序后重试。"
+                ) from None
+    raise AssertionError("unreachable")
+
+
+def check_device(port: str) -> dict:
+    fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    try:
+        configure_serial(fd)
+        return probe(fd)
+    finally:
+        os.close(fd)
 
 
 def provision(port: str, settings: dict) -> dict:
@@ -95,8 +123,14 @@ def provision(port: str, settings: dict) -> dict:
     try:
         configure_serial(fd)
         # Probe before sending any secret; legacy firmware receives no credentials.
-        exchange(fd, {"type": "feishu_status"})
-        reply = exchange(fd, {"type": "feishu_configure", **settings})
+        probe(fd)
+        try:
+            reply = exchange(fd, {"type": "feishu_configure", **settings})
+        except UsbReplyTimeout:
+            raise UsbReplyTimeout(
+                "设备已确认支持飞书配置，但未收到保存回执。保存结果尚未确认；"
+                "请重新连接 USB 后重试，无需重复刷机。"
+            ) from None
         expected = "apple" if settings.get("clear") else settings["engine"]
         if reply.get("engine") != expected or (expected == "feishu" and reply.get("configured") is not True):
             raise RuntimeError("设备回执与所选识别方式不一致，请重试")
@@ -108,9 +142,16 @@ def provision(port: str, settings: dict) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True)
-    parser.add_argument("--stdin", action="store_true", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--stdin", action="store_true")
+    mode.add_argument("--check", action="store_true", help="只检测 USB 和固件能力，不写凭据")
     args = parser.parse_args(argv)
     try:
+        if args.check:
+            reply = check_device(args.port)
+            print("USB 通信正常，设备支持飞书配置。"
+                  + ("设备已有应用凭据。" if reply.get("configured") else "设备尚未保存应用凭据。"))
+            return 0
         raw = sys.stdin.read(4097)
         if len(raw) > 4096:
             raise ValueError("配置输入过长")
