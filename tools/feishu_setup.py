@@ -19,31 +19,30 @@ else:
 def validate_settings(settings: dict) -> dict:
     if not isinstance(settings, dict):
         raise ValueError("配置格式无效")
+    if "engine" in settings:
+        raise ValueError("语音切换已移除；此入口只保存飞书应用凭据")
     if settings.get("clear") is True:
-        return {"engine": "apple", "clear": True}
-    engine = settings.get("engine")
+        return {"clear": True}
     app_id = settings.get("app_id", "")
     secret = settings.get("app_secret", "")
-    if engine not in ("apple", "feishu"):
-        raise ValueError("请选择 Apple 或飞书识别")
     if not isinstance(app_id, str) or not isinstance(secret, str):
         raise ValueError("应用凭据格式无效")
     if app_id or secret:
         if (not re.fullmatch(r"cli_[A-Za-z0-9_-]{1,59}", app_id)
                 or not re.fullmatch(r"[A-Za-z0-9_-]{1,127}", secret)):
             raise ValueError("请同时填写有效的 App ID 和 App Secret，或同时留空保留原配置")
-    return {"engine": engine, "app_id": app_id, "app_secret": secret, "clear": False}
+    return {"app_id": app_id, "app_secret": secret, "clear": False}
 
 
 class UsbReplyTimeout(RuntimeError):
     """No matching reply; safe to retry only a read-only capability probe."""
 
 
-def exchange(fd: int, message: dict, timeout: float = 5.0) -> dict:
+def exchange(fd: int, message: dict, timeout: float = 5.0, protocol: int = 2) -> dict:
     request_id = secrets.token_hex(16)
     # A leading delimiter discards a partial line left by an interrupted USB session.
     prefix = "\n" if message.get("type") == "feishu_status" else ""
-    wire = memoryview((prefix + json.dumps({**message, "protocol": 1, "request_id": request_id}) + "\n").encode())
+    wire = memoryview((prefix + json.dumps({**message, "protocol": protocol, "request_id": request_id}) + "\n").encode())
     if len(wire) > 768:
         raise ValueError("配置超过设备协议长度限制")
     deadline = time.monotonic() + timeout
@@ -85,12 +84,13 @@ def exchange(fd: int, message: dict, timeout: float = 5.0) -> dict:
                 continue
             if reply.get("request_id") != request_id:
                 continue
-            if reply.get("protocol") != 1:
+            versions = (1, 2) if message.get("type") == "feishu_status" else (2,)
+            if reply.get("protocol") not in versions:
                 raise RuntimeError("设备配置协议不兼容，请更新固件")
             if reply.get("ok") is not True:
                 if reply.get("error") == "busy":
                     raise RuntimeError("设备正在录音或升级，请结束后重试")
-                raise RuntimeError("设备拒绝配置：请检查凭据；首次启用飞书需填写 App ID 和 Secret")
+                raise RuntimeError("设备拒绝配置：请检查凭据；首次保存需填写 App ID 和 Secret")
             return reply
     raise UsbReplyTimeout("设备未响应：等待 USB 回执超时")
 
@@ -98,7 +98,10 @@ def exchange(fd: int, message: dict, timeout: float = 5.0) -> dict:
 def probe(fd: int) -> dict:
     for attempt in range(3):
         try:
-            return exchange(fd, {"type": "feishu_status"}, timeout=3.0)
+            reply = exchange(fd, {"type": "feishu_status"}, timeout=3.0, protocol=1)
+            if reply.get("protocol") != 2:
+                raise RuntimeError("设备仍使用带语音切换的旧版协议，请先更新本版固件。已有飞书凭据会保留，无需清除。")
+            return reply
         except UsbReplyTimeout:
             if attempt == 2:
                 raise UsbReplyTimeout(
@@ -131,9 +134,9 @@ def provision(port: str, settings: dict) -> dict:
                 "设备已确认支持飞书配置，但未收到保存回执。保存结果尚未确认；"
                 "请重新连接 USB 后重试，无需重复刷机。"
             ) from None
-        expected = "apple" if settings.get("clear") else settings["engine"]
-        if reply.get("engine") != expected or (expected == "feishu" and reply.get("configured") is not True):
-            raise RuntimeError("设备回执与所选识别方式不一致，请重试")
+        expected = not settings.get("clear", False)
+        if reply.get("configured") is not expected:
+            raise RuntimeError("设备回执与凭据保存操作不一致，请重试")
         return reply
     finally:
         os.close(fd)
@@ -161,11 +164,9 @@ def main(argv=None) -> int:
             raise ValueError("配置格式无效") from None
         reply = provision(args.port, settings)
         if settings.get("clear") is True:
-            print("设备飞书凭据已清除，已切换为 Apple 识别。")
-        elif reply.get("engine") == "feishu":
-            print("已启用设备直连飞书语音识别。凭据保存在设备配置区。\n请在编程伴侣中录音测试；需要非免费版飞书及 speech_to_text:speech 权限。")
+            print("设备上的飞书应用凭据已清除。")
         else:
-            print("已切换为 Mac Apple 语音识别。")
+            print("飞书应用凭据已保存到设备，供后续飞书功能使用。语音识别保持使用 Mac。")
         return 0
     except (ValueError, RuntimeError) as error:
         print(str(error), file=sys.stderr)

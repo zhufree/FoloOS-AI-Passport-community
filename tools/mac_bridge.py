@@ -1041,7 +1041,6 @@ class SerialBridge:
         self.capture = AudioCapture(recordings_dir or default_recordings)
         self.word_bear = word_bear_store or WordBearStore()
         self.speech_process: subprocess.Popen[str] | None = None
-        self.device_asr_active = False
 
     def open(self) -> None:
         self.fd = os.open(
@@ -1130,7 +1129,6 @@ class SerialBridge:
     def start_heartbeat(self) -> None:
         """Keep the device alive even while a synchronous Codex RPC is slow."""
         self._heartbeat_error = None
-        self.device_asr_active = False
         self._heartbeat_stop.clear()
         self.send({"type": "bridge_ready"})
         self.send({"type": "word_bear_day", "day": date.today().toordinal()})
@@ -1185,16 +1183,6 @@ class SerialBridge:
             return
         if event_type == "word_bear_audio_request":
             self.stream_word_audio(str(event.get("word") or ""))
-            return
-        if event_type == "device_asr":
-            self.device_asr_active = event.get("active") is True
-            if self.device_asr_active:
-                self.capture.cancel()
-                if self.speech_process is not None:
-                    if self.speech_process.poll() is None:
-                        self.speech_process.terminate()
-                    self.speech_process = None
-            print("设备正在使用飞书识别" if self.device_asr_active else "设备飞书识别已结束")
             return
         labels = {
             "record_start": "设备开始录音",
@@ -1308,7 +1296,7 @@ class SerialBridge:
         # Audio arrives about 50 times per second; blocking here fills the
         # ESP32 TCP send buffer and makes the Wi-Fi bridge disconnect midway
         # through a recording. Voice capture always takes priority.
-        if self.capture.active or self.device_asr_active:
+        if self.capture.active:
             return
         try:
             for message in self.codex.poll():

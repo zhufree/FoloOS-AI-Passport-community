@@ -5,7 +5,6 @@
 
 #include "coding_flow.h"
 #include "coding_bridge.h"
-#include "feishu_service.h"
 #include "lvgl.h"
 #include "ui_pixel.h"
 #include "ui_pixel_math.h"
@@ -827,8 +826,7 @@ static void coding_render(void)
         a1 = "切换任务";
         break;
     case CODING_STAGE_RECORDING:
-        snprintf(detail, sizeof(s_render_detail), "%s", feishu_service_enabled()
-                 ? "飞书语音识别，最长 30 秒…" : "正在认真听你说话…");
+        snprintf(detail, sizeof(s_render_detail), "正在认真听你说话…");
         a0 = "结束录音";
         panel_color = UI_SOFT;
         break;
@@ -999,14 +997,6 @@ void app_coding_task_selected(const char *title, const char *project)
     s_catalog_mode = CATALOG_NONE;
     coding_flow_set_connected(&s_flow, true);
     coding_render();
-}
-
-void app_coding_capture_stopped(void)
-{
-    if (s_flow.stage == CODING_STAGE_RECORDING) {
-        (void)coding_flow_end_recording(&s_flow);
-        coding_render();
-    }
 }
 
 void app_coding_bridge_transcript(const char *text)

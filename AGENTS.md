@@ -17,3 +17,5 @@ Before changes, inspect git status and preserve existing edits. Run idf.py build
 and applicable existing tests. Report build/host results separately from physical
 device checks. Keep tests silent; do not flash a device unless requested.
 Do not commit credentials, pairing state, personal paths, logs or generated builds.
+
+Only commit or push when explicitly requested by the user.

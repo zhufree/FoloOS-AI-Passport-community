@@ -127,8 +127,8 @@ zsh tests/test_mac_installer_proxy.zsh
 
 修改后可以在自己的 Fork 中发布固件，或提交 Pull Request。不要提交 Wi-Fi 密码、设备配对文件、Codex 登录信息、录音和个人日志。
 
-## 8. 共享飞书语音服务
+## 8. 飞书应用凭据
 
-设备直连语音服务、USB 配置协议及开发验证见
-[飞书语音说明](docs/FEISHU_VOICE.md)。新应用应从工作任务调用共享服务，
-不要在 LVGL/按键回调中执行鉴权或音频网络请求。
+USB 配置协议、旧版凭据兼容及开发验证见
+[飞书应用配置](docs/FEISHU_APP_SETUP.md)。当前只保存凭据，不调用飞书 API。
+编程伴侣使用 Mac Apple Speech，没有语音引擎切换。

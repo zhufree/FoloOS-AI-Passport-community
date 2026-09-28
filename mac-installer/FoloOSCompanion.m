@@ -194,14 +194,14 @@
     NSStackView *firmwareRow = [NSStackView stackViewWithViews:@[self.firmwareButton, firmwareNote]];
     firmwareRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     firmwareRow.spacing = 10;
-    self.feishuButton = [NSButton buttonWithTitle:@"配置飞书语音…" target:self action:@selector(configureFeishu:)];
+    self.feishuButton = [NSButton buttonWithTitle:@"配置飞书应用…" target:self action:@selector(configureFeishu:)];
     self.feishuButton.bezelStyle = NSBezelStyleRounded;
-    NSTextField *speechNote = [NSTextField labelWithString:@"通过 USB 设置设备直连飞书，或切回 Apple 识别"];
-    speechNote.font = [NSFont systemFontOfSize:12];
-    speechNote.textColor = NSColor.secondaryLabelColor;
-    NSStackView *speechRow = [NSStackView stackViewWithViews:@[self.feishuButton, speechNote]];
-    speechRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    speechRow.spacing = 10;
+    NSTextField *credentialsNote = [NSTextField labelWithString:@"通过 USB 保存应用凭据，供后续飞书功能使用"];
+    credentialsNote.font = [NSFont systemFontOfSize:12];
+    credentialsNote.textColor = NSColor.secondaryLabelColor;
+    NSStackView *credentialsRow = [NSStackView stackViewWithViews:@[self.feishuButton, credentialsNote]];
+    credentialsRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    credentialsRow.spacing = 10;
 
 
     self.progress = [NSProgressIndicator new];
@@ -233,7 +233,7 @@
     note.font = [NSFont systemFontOfSize:12];
     note.maximumNumberOfLines = 2;
 
-    NSStackView *root = [NSStackView stackViewWithViews:@[header, statusBox, buttons, firmwareRow, speechRow, outputHeader, scroll, note]];
+    NSStackView *root = [NSStackView stackViewWithViews:@[header, statusBox, buttons, firmwareRow, credentialsRow, outputHeader, scroll, note]];
     root.orientation = NSUserInterfaceLayoutOrientationVertical;
     root.alignment = NSLayoutAttributeLeading;
     root.spacing = 16;
@@ -661,26 +661,24 @@
 - (void)showFeishuConfiguration:(NSString *)python ports:(NSArray<NSString *> *)ports {
     NSPopUpButton *port = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [port addItemsWithTitles:ports];
-    NSPopUpButton *engine = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    [engine addItemsWithTitles:@[@"飞书识别（设备直接联网）", @"Apple 识别（由 Mac 处理）"]];
     NSTextField *appID = [NSTextField new];
     appID.placeholderString = @"App ID（cli_ 开头）";
     NSSecureTextField *secret = [NSSecureTextField new];
     secret.placeholderString = @"App Secret";
-    NSTextField *note = [NSTextField wrappingLabelWithString:@"应用凭据同时留空可保留设备原配置。凭据只写入设备，不保存到 Mac；切回 Apple 不会删除凭据。"];
+    NSTextField *note = [NSTextField wrappingLabelWithString:@"应用凭据同时留空可保留设备原配置。凭据只写入设备，不保存到 Mac。"];
     note.font = [NSFont systemFontOfSize:12];
     note.textColor = NSColor.secondaryLabelColor;
-    NSStackView *stack = [NSStackView stackViewWithViews:@[port, engine, appID, secret, note]];
+    NSStackView *stack = [NSStackView stackViewWithViews:@[port, appID, secret, note]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.alignment = NSLayoutAttributeLeading;
     stack.spacing = 10;
-    stack.frame = NSMakeRect(0, 0, 420, 180);
-    for (NSView *view in @[port, engine, appID, secret, note]) {
+    stack.frame = NSMakeRect(0, 0, 420, 145);
+    for (NSView *view in @[port, appID, secret, note]) {
         [[view.widthAnchor constraintEqualToConstant:420] setActive:YES];
     }
     NSAlert *alert = [NSAlert new];
-    alert.messageText = @"配置设备语音识别";
-    alert.informativeText = @"先安装/修复桥接，再通过“自定义安装应用”更新固件。飞书需已发布的企业自建应用和 speech_to_text:speech 权限；官方接口不支持免费版。启用后，设备将录音直接发送至飞书，识别文字仍需你确认后才交给 Codex。";
+    alert.messageText = @"配置飞书应用凭据";
+    alert.informativeText = @"此处仅保存 App ID 和 App Secret，供后续飞书功能使用，不会调用飞书语音识别。更新本版固件后，编程伴侣使用原来的 Mac 语音识别，已保存的飞书凭据会保留。";
     alert.accessoryView = stack;
     [alert addButtonWithTitle:@"写入设备"];
     [alert addButtonWithTitle:@"取消"];
@@ -695,7 +693,6 @@
         return;
     }
     NSData *input = [NSJSONSerialization dataWithJSONObject:@{
-        @"engine": engine.indexOfSelectedItem == 0 ? @"feishu" : @"apple",
         @"app_id": clear ? @"" : identifier,
         @"app_secret": clear ? @"" : secret.stringValue,
         @"clear": @(clear)
@@ -703,7 +700,7 @@
     secret.stringValue = @"";
     NSString *selectedPort = port.titleOfSelectedItem;
     self.firmwareInstalling = YES;
-    [self setBusy:YES message:@"正在通过 USB 写入设备语音配置…"];
+    [self setBusy:YES message:@"正在通过 USB 写入飞书应用凭据…"];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         BOOL wasRunning = [[self runCommand:@"/bin/launchctl" arguments:@[@"print", self.serviceName]][@"code"] intValue] == 0;
         if (wasRunning) [self stopService];
