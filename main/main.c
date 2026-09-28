@@ -309,6 +309,7 @@ void app_main(void) {
                  BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
         return;
     }
+    app_settings_init();
     bool button_ok = bsp_button_init(on_key, NULL) == ESP_OK;
     bool audio_ok = bsp_audio_init() == ESP_OK;
     bool battery_ok = bsp_battery_init() == ESP_OK;

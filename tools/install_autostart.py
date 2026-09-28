@@ -16,6 +16,7 @@ import time
 LABEL = "com.folotoy.foloos-bridge"
 RUNTIME_FILES = (
     "mac_bridge.py",
+    "qwen_speech.py",
     "codex_backend.py",
     "mac_speech_helper.m",
     "mac_speech_helper-Info.plist",

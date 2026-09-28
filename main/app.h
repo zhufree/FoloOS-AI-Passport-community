@@ -60,6 +60,8 @@ void app_word_bear_restore_item(int id, uint16_t learn_count,
                                 uint8_t correct_streak, uint8_t flags);
 void app_word_bear_restore_end(void);
 
+void app_settings_init(void);
+void app_settings_bridge_info(const char *provider, const char *model, const char *notification);
 void app_settings_enter(void);
 void app_settings_exit(void);
 void app_settings_key(bsp_btn_t button, bsp_btn_ev_t event);

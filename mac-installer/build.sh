@@ -46,6 +46,7 @@ cp -p "$ROOT/mac-installer/Info.plist" "$CONTENTS/Info.plist"
 cp -p "$ROOT/mac-installer/README.md" "$RESOURCES/README.md"
 for FILE in \
     mac_bridge.py \
+    qwen_speech.py \
     codex_backend.py \
     install_autostart.py \
     firmware_catalog.py \

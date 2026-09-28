@@ -1,6 +1,10 @@
 #include "app.h"
 
 #include <stddef.h>
+#include <string.h>
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "coding_bridge.h"
 
 #include "bsp_battery.h"
 #include "bsp_display.h"
@@ -14,7 +18,7 @@ static const uint8_t SFX_VOLUME[] = {0, 25, 50, 75, 100};
 static const char *const VOICE_NAMES[] = {"静音", "提示音", "语音播报"};
 
 static lv_obj_t *s_screen;
-#define SETTING_COUNT 5
+#define SETTING_COUNT 6
 
 static lv_obj_t *s_panels[SETTING_COUNT];
 static lv_obj_t *s_labels[SETTING_COUNT];
@@ -25,12 +29,63 @@ static bool s_network_selecting;
 static int s_network_selection = 1;
 static int s_brightness_index = 2;
 static int s_sfx_volume_index = 2;
-static app_voice_mode_t s_voice_mode = APP_VOICE_SPEECH;
+static app_voice_mode_t s_voice_mode = APP_VOICE_TONE;
+static uint8_t s_remote_default = UINT8_MAX;
+static const char *s_asr = "--";
+
+void app_settings_init(void)
+{
+    if (nvs_flash_init() != ESP_OK) return;
+    nvs_handle_t handle;
+    if (nvs_open("app_settings", NVS_READONLY, &handle) != ESP_OK) return;
+    uint8_t mode;
+    if (nvs_get_u8(handle, "voice", &mode) == ESP_OK && mode <= APP_VOICE_SPEECH) {
+        s_voice_mode = (app_voice_mode_t)mode;
+    }
+    if (nvs_get_u8(handle, "remote_voice", &mode) == ESP_OK && mode <= APP_VOICE_SPEECH) {
+        s_remote_default = mode;
+    }
+    nvs_close(handle);
+}
+
+static void save_voice_mode(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open("app_settings", NVS_READWRITE, &handle) != ESP_OK) return;
+    nvs_set_u8(handle, "voice", (uint8_t)s_voice_mode);
+    nvs_set_u8(handle, "remote_voice", s_remote_default);
+    nvs_commit(handle);
+    nvs_close(handle);
+}
+
+void app_settings_bridge_info(const char *provider, const char *model, const char *notification)
+{
+    if (strcmp(provider, "apple") == 0) s_asr = "Apple";
+    else if (strcmp(provider, "qwen") == 0) {
+        if (strcmp(model, "qwen-audio-3.1-asr-flash") == 0) s_asr = "Qwen 3.1";
+        else if (strcmp(model, "qwen-audio-3.0-asr-flash") == 0) s_asr = "Qwen 3.0";
+        else s_asr = "Qwen3-ASR";
+    } else s_asr = "--";
+    uint8_t mode = UINT8_MAX;
+    if (strcmp(notification, "silent") == 0) mode = APP_VOICE_SILENT;
+    else if (strcmp(notification, "tone") == 0) mode = APP_VOICE_TONE;
+    else if (strcmp(notification, "speech") == 0) mode = APP_VOICE_SPEECH;
+    if (mode <= APP_VOICE_SPEECH && mode != s_remote_default) {
+        s_remote_default = mode;
+        s_voice_mode = (app_voice_mode_t)mode;
+        save_voice_mode();
+    }
+}
 
 static void settings_render(void)
 {
     if (s_screen == NULL) {
         return;
+    }
+    if (wireless_bridge_is_provisioning() || s_network_selecting) {
+        lv_obj_add_flag(s_panels[5], LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_remove_flag(s_panels[5], LV_OBJ_FLAG_HIDDEN);
     }
     if (wireless_bridge_is_provisioning()) {
         lv_label_set_text(s_labels[0], "手机连接临时热点");
@@ -86,6 +141,7 @@ static void settings_render(void)
     lv_label_set_text_fmt(s_labels[3], "无线网络    %s",
                           wireless_bridge_is_connected() ? ip : "未连接");
     lv_label_set_text(s_labels[4], "Wi-Fi 管理（无需电脑）");
+    lv_label_set_text_fmt(s_labels[5], "语音识别    %s", coding_bridge_is_connected() ? s_asr : "未连接");
     int battery_soc = bsp_battery_soc();
     int battery_level = battery_soc >= 0 ? battery_soc : bsp_battery_level();
     int battery_soc_raw = bsp_battery_soc_raw();
@@ -141,8 +197,8 @@ void app_settings_enter(void)
     s_network_selection = 1;
     s_screen = ui_pixel_screen_create("系统设置");
     for (int i = 0; i < SETTING_COUNT; ++i) {
-        s_panels[i] = ui_pixel_panel_create(s_screen, 12, 50 + i * 46,
-                                            216, 38, UI_SURFACE);
+        s_panels[i] = ui_pixel_panel_create(s_screen, 12, 46 + i * 39,
+                                            216, 34, UI_SURFACE);
         s_labels[i] = ui_pixel_label(s_panels[i], "", ui_cn_font(), UI_INK);
         lv_obj_set_width(s_labels[i], 196);
         lv_label_set_long_mode(s_labels[i], LV_LABEL_LONG_DOT);
@@ -232,6 +288,7 @@ void app_settings_key(bsp_btn_t button, bsp_btn_ev_t event)
         ui_sfx_set_volume(SFX_VOLUME[s_sfx_volume_index]);
     } else if (button == BSP_BTN_OK && s_selection == 2) {
         s_voice_mode = (app_voice_mode_t)((s_voice_mode + 1) % 3);
+        save_voice_mode();
     } else if (button == BSP_BTN_OK && s_selection == 3) {
         wireless_bridge_reconnect();
     } else if (button == BSP_BTN_OK && s_selection == 4) {

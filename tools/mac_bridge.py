@@ -40,8 +40,10 @@ from typing import Any, Callable
 
 if __package__:
     from .codex_backend import CodexAppServer, CodexProtocolError
+    from .qwen_speech import load_config as load_speech_config
 else:
     from codex_backend import CodexAppServer, CodexProtocolError
+    from qwen_speech import load_config as load_speech_config
 
 
 HEARTBEAT_SECONDS = 5.0
@@ -284,6 +286,11 @@ class MacSpeechRecognizer:
         subprocess.run([launch_services, "-f", str(self.app_bundle)], capture_output=True)
 
     def start(self, wav_path: Path) -> subprocess.Popen[str]:
+        if load_speech_config()['provider'] == 'qwen':
+            return subprocess.Popen(
+                [sys.executable, str(self.tools_dir / 'qwen_speech.py'), str(wav_path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
         self.ensure_helper()
         return subprocess.Popen(
             [str(self.binary), str(wav_path), self.locale],
@@ -1118,10 +1125,21 @@ class SerialBridge:
             if speech_started:
                 self.send({"type": "speech_end"})
 
+    def ready_message(self) -> dict[str, Any]:
+        message = {"type": "bridge_ready"}
+        if isinstance(self.speech, MacSpeechRecognizer):
+            try:
+                config = load_speech_config()
+                message.update(asr_provider=config['provider'], asr_model=config['model'],
+                               notification_mode=config['notification_mode'])
+            except ValueError:
+                message['asr_provider'] = 'unavailable'
+        return message
+
     def _heartbeat_loop(self) -> None:
         while not self._heartbeat_stop.wait(self.heartbeat_seconds):
             try:
-                self.send({"type": "bridge_ready"})
+                self.send(self.ready_message())
             except (OSError, RuntimeError) as error:
                 self._heartbeat_error = error
                 return
@@ -1130,7 +1148,7 @@ class SerialBridge:
         """Keep the device alive even while a synchronous Codex RPC is slow."""
         self._heartbeat_error = None
         self._heartbeat_stop.clear()
-        self.send({"type": "bridge_ready"})
+        self.send(self.ready_message())
         self.send({"type": "word_bear_day", "day": date.today().toordinal()})
         self.send({"type": "word_bear_sync_request"})
         self._heartbeat_thread = threading.Thread(

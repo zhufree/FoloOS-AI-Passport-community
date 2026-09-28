@@ -58,3 +58,38 @@ App 位于 `build/mac-installer/FoloOS 编程伴侣.app`。
 - 真机需要另外验证四种组合的菜单、短按/长按、原有功能和 OTA 重启；
   移除后重新安装单词熊，确认学习进度保留，并确认升级后能继续下一次 OTA。
 - 编译、主机测试和界面检查不能代替真机安装验证。自动测试不刷设备。
+
+## Qwen 语音识别
+
+点击「语音识别 API…」，选择 Qwen，填写北京地域的百炼 API Key。
+默认 Base URL 为 `https://dashscope.aliyuncs.com/api/v1`，
+模型为 `qwen-audio-3.1-asr-flash`。也支持 3.0 和旧版 `qwen3-asr-flash`
+（含日期快照）。可直接粘贴百炼业务空间域名，程序自动补全 HTTPS，
+按模型选择原生 DashScope 或 OpenAI 兼容路径并解析对应结果。
+也接受 `/api/v1`、`/compatible-mode/v1` Base URL 和完整的对应请求地址。
+不支持 streaming、realtime、filetrans 等流式或异步型号。
+3.1 使用原生 HTTP 短音频接口，并设置中英文语言提示。
+
+[开通百炼](https://bailian.console.aliyun.com/) ·
+[获取 API Key](https://help.aliyun.com/zh/model-studio/get-api-key)
+
+首次使用新版 App，点击「安装 / 修复桥接」更新后台程序。
+之后设置在下一次录音时生效，无需重启桥接。选择 Apple 可恢复系统识别。
+Qwen 会上传录音并按服务商规则计费，失败会显示错误，不会自动切换服务。
+Key 与设置保存在用户 Application Support/FoloOS/speech.json，权限为 0600，
+不是钥匙串存储；不会写入启动参数、固件或仓库。请勿分享该配置文件。
+
+模型使用下拉选择：Qwen-Audio 3.1（按输入/输出 Token 计费）、
+Qwen-Audio 3.0（按音频时长计费）。
+切换模型保留 API Key 和业务空间地址，保存后下一次录音生效；取消不修改设置。
+已有旧版模型或日期快照会保留为「已保存」选项。用户可根据百炼控制台的免费额度手动选择，
+App 不查询余额，也不在额度耗尽或接口报错时自动换模型。
+
+选择 Apple 时隐藏 Qwen 的 Key、接口和模型配置；切回 Qwen 会保留先前输入。
+「设备默认提醒方式」可选静音、提示音或语音播报，首次默认提示音。
+新版桥接通过心跳同步识别服务、模型与提醒默认值，新版固件设置页的「语音识别」行
+显示 Apple / Qwen 3.1 / Qwen 3.0；断开桥接时显示未连接。
+设备提醒选择保存在 NVS，普通重启和保留 NVS 的固件更新不会重置。
+Mac 默认值发生变化时覆盖设备选择，同一个默认值的后续同步不会覆盖设备手动选择。
+擦除 NVS 后，下次连接 Mac 会恢复其默认提醒方式；未连接时使用提示音。
+此功能需要更新固件与桥接；老固件会忽略新增心跳字段。

@@ -49,6 +49,10 @@
 @property(nonatomic, strong) NSDictionary *firmwareCatalog;
 @property(nonatomic, strong) NSButton *firmwareConfirmButton;
 @property(nonatomic) BOOL firmwareInstalling;
+@property(nonatomic, strong) NSStackView *qwenFields;
+@property(nonatomic, strong) NSStackView *speechStack;
+@property(nonatomic, strong) NSAlert *speechAlert;
+@property(nonatomic, strong) NSTextField *speechSelectionNote;
 @end
 
 @implementation AppDelegate
@@ -187,10 +191,9 @@
 
     self.firmwareButton = [NSButton buttonWithTitle:@"自定义安装应用…" target:self action:@selector(customizeFirmware:)];
     self.firmwareButton.bezelStyle = NSBezelStyleRounded;
-    NSTextField *firmwareNote = [NSTextField labelWithString:@"选择离线应用，通过已配对的 Wi-Fi 安装到设备"];
-    firmwareNote.font = [NSFont systemFontOfSize:12];
-    firmwareNote.textColor = NSColor.secondaryLabelColor;
-    NSStackView *firmwareRow = [NSStackView stackViewWithViews:@[self.firmwareButton, firmwareNote]];
+    NSButton *speechButton = [NSButton buttonWithTitle:@"语音识别 API…" target:self action:@selector(configureSpeech:)];
+    speechButton.bezelStyle = NSBezelStyleRounded;
+    NSStackView *firmwareRow = [NSStackView stackViewWithViews:@[self.firmwareButton, speechButton]];
     firmwareRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     firmwareRow.spacing = 10;
 
@@ -611,6 +614,123 @@
     }
     [ports sortUsingSelector:@selector(compare:)];
     return ports;
+}
+
+- (void)openQwenConsole:(id)sender {
+    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://bailian.console.aliyun.com/"]];
+}
+
+- (void)speechProviderChanged:(NSPopUpButton *)sender {
+    BOOL qwen = sender.indexOfSelectedItem == 1;
+    self.qwenFields.hidden = !qwen;
+    [self.speechStack setFrameSize:NSMakeSize(470, qwen ? 420 : 170)];
+    [self.speechAlert layout];
+    self.speechSelectionNote.stringValue = qwen
+        ? @"保存后使用 Qwen 识别；下方选择模型。"
+        : @"保存后使用 Apple 系统识别，无需 API Key。";
+}
+
+- (void)configureSpeech:(id)sender {
+    self.speechAlert = nil;
+    NSString *python = [self pythonPath];
+    if (!python) {
+        [self showAlert:@"缺少 Python 3" message:@"请先安装 Python 3 再配置语音识别。"];
+        return;
+    }
+    NSURL *url = [NSFileManager.defaultManager.homeDirectoryForCurrentUser
+        URLByAppendingPathComponent:@"Library/Application Support/FoloOS/speech.json"];
+    NSData *data = [NSData dataWithContentsOfURL:url];
+    id decoded = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    NSDictionary *config = [decoded isKindOfClass:NSDictionary.class] ? decoded : @{};
+    NSPopUpButton *provider = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [provider addItemsWithTitles:@[@"Apple（系统识别）", @"Qwen（阿里云百炼）"]];
+    [provider selectItemAtIndex:[config[@"provider"] isEqual:@"qwen"] ? 1 : 0];
+    provider.target = self;
+    provider.action = @selector(speechProviderChanged:);
+    NSSecureTextField *key = [NSSecureTextField new];
+    key.placeholderString = @"粘贴北京地域 API Key";
+    key.stringValue = [config[@"api_key"] isKindOfClass:NSString.class] ? config[@"api_key"] : @"";
+    NSTextField *endpoint = [NSTextField new];
+    endpoint.stringValue = [config[@"base_url"] isKindOfClass:NSString.class] ? config[@"base_url"] : @"https://dashscope.aliyuncs.com/api/v1";
+    NSPopUpButton *model = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    NSArray<NSArray<NSString *> *> *models = @[
+        @[@"Qwen-Audio 3.1 · 按输入 / 输出 Token 计费", @"qwen-audio-3.1-asr-flash"],
+        @[@"Qwen-Audio 3.0 · 按音频时长计费", @"qwen-audio-3.0-asr-flash"],
+    ];
+    NSString *savedModel = [config[@"model"] isKindOfClass:NSString.class]
+        ? config[@"model"] : @"qwen-audio-3.1-asr-flash";
+    BOOL foundModel = NO;
+    for (NSArray<NSString *> *entry in models) {
+        [model addItemWithTitle:entry[0]];
+        model.lastItem.representedObject = entry[1];
+        if ([entry[1] isEqualToString:savedModel]) {
+            [model selectItem:model.lastItem];
+            foundModel = YES;
+        }
+    }
+    // Preserve existing dated snapshots rather than silently changing the model.
+    if (!foundModel) {
+        [model addItemWithTitle:[@"已保存：" stringByAppendingString:savedModel]];
+        model.lastItem.representedObject = savedModel;
+        [model selectItem:model.lastItem];
+    }
+    NSTextField *quotaNote = [NSTextField wrappingLabelWithString:
+        @"可按各模型剩余免费额度手动切换。免费额度、有效期与实际费用以百炼控制台为准；本 App 不查询余额或自动切换模型。"];
+    quotaNote.font = [NSFont systemFontOfSize:12];
+    quotaNote.textColor = NSColor.secondaryLabelColor;
+    [quotaNote.widthAnchor constraintEqualToConstant:470].active = YES;
+    NSButton *console = [NSButton buttonWithTitle:@"开通百炼 / 获取 API Key ↗" target:self action:@selector(openQwenConsole:)];
+    self.qwenFields = [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:@"API Key"], key,
+        [NSTextField labelWithString:@"接口域名或 Base URL（与 Key 地域一致）"], endpoint,
+        [NSTextField labelWithString:@"识别模型与计费方式"], model, quotaNote, console]];
+    self.qwenFields.orientation = NSUserInterfaceLayoutOrientationVertical;
+    self.qwenFields.alignment = NSLayoutAttributeLeading;
+    self.qwenFields.spacing = 7;
+    self.speechSelectionNote = [NSTextField labelWithString:@""];
+    self.speechSelectionNote.font = [NSFont systemFontOfSize:12];
+    NSPopUpButton *notification = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [notification addItemsWithTitles:@[@"静音", @"提示音", @"语音播报"]];
+    NSArray *notificationModes = @[@"silent", @"tone", @"speech"];
+    NSUInteger modeIndex = [notificationModes indexOfObject:config[@"notification_mode"] ?: @"tone"];
+    [notification selectItemAtIndex:modeIndex == NSNotFound ? 1 : modeIndex];
+    NSTextField *defaultNote = [NSTextField wrappingLabelWithString:
+        @"连接后同步到设备。设备手动选择会保留；更改此默认值后将更新设备。"];
+    [defaultNote.widthAnchor constraintEqualToConstant:470].active = YES;
+    defaultNote.font = [NSFont systemFontOfSize:12];
+    NSStackView *stack = [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:@"识别服务"], provider, self.speechSelectionNote,
+        self.qwenFields, [NSTextField labelWithString:@"设备默认提醒方式"], notification, defaultNote]];
+    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    stack.alignment = NSLayoutAttributeLeading;
+    stack.spacing = 7;
+    stack.detachesHiddenViews = YES;
+    stack.frame = NSMakeRect(0, 0, 470, 420);
+    for (NSView *field in @[provider, key, endpoint, model, notification]) {
+        [field.widthAnchor constraintEqualToConstant:470].active = YES;
+    }
+    self.speechStack = stack;
+    [self speechProviderChanged:provider];
+    NSAlert *alert = [NSAlert new];
+    self.speechAlert = alert;
+    alert.messageText = @"语音识别设置";
+    alert.informativeText = @"识别服务保存后下一次录音生效；设备设置页显示连接中的实际识别服务。Qwen 使用云端识别并按服务商规则计费。";
+    alert.accessoryView = stack;
+    [alert addButtonWithTitle:@"保存"];
+    [alert addButtonWithTitle:@"取消"];
+    while ([alert runModal] == NSAlertFirstButtonReturn) {
+        NSDictionary *settings = @{@"provider": provider.indexOfSelectedItem == 1 ? @"qwen" : @"apple",
+            @"api_key": key.stringValue, @"base_url": endpoint.stringValue, @"model": model.selectedItem.representedObject,
+            @"notification_mode": notificationModes[notification.indexOfSelectedItem]};
+        NSData *input = [NSJSONSerialization dataWithJSONObject:settings options:0 error:nil];
+        NSDictionary *result = [self runCommand:python arguments:@[
+            [[self.toolsURL URLByAppendingPathComponent:@"qwen_speech.py"] path], @"--save"] input:input];
+        if ([result[@"code"] intValue] == 0) {
+            [self showAlert:@"语音设置已保存" message:@"首次使用新版 App，请点击一次「安装 / 修复桥接」更新后台程序。此后切换服务或修改 Key 无需重装。"];
+            return;
+        }
+        [self showAlert:@"保存失败" message:result[@"output"]];
+    }
 }
 
 - (void)configureWiFi:(id)sender {

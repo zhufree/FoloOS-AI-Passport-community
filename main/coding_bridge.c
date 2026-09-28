@@ -728,7 +728,11 @@ static bool dispatch_message(const cJSON *root)
         app_coding_bridge_connected(true);
     }
 
-    if (strcmp(type, "transcript") == 0) {
+    if (strcmp(type, "bridge_ready") == 0) {
+        app_settings_bridge_info(json_string(root, "asr_provider"),
+                                 json_string(root, "asr_model"),
+                                 json_string(root, "notification_mode"));
+    } else if (strcmp(type, "transcript") == 0) {
         app_coding_bridge_transcript(json_string(root, "text"));
     } else if (strcmp(type, "task_queued") == 0) {
         app_coding_bridge_task_queued(json_string(root, "text"));
